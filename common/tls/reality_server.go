@@ -42,12 +42,10 @@ func NewRealityServer(ctx context.Context, logger log.Logger, options option.Inb
 	}
     if len(options.ALPN) > 0 {
         next := append([]string{}, options.ALPN...)
-        // Optional: ensure h2 is first when requested for better client compatibility
-        if options.Reality != nil && options.Reality.AlpnPreferH2 {
-            hasH2 := -1
-            for i, p := range next { if p == "h2" { hasH2 = i; break } }
-            if hasH2 > 0 { h2 := next[hasH2]; copy(next[1:hasH2+1], next[0:hasH2]); next[0] = h2 }
-        }
+        // Default behavior: if h2 is present, prefer h2 first to align with common clients/fronts.
+        hasH2 := -1
+        for i, p := range next { if p == "h2" { hasH2 = i; break } }
+        if hasH2 > 0 { h2 := next[hasH2]; copy(next[1:hasH2+1], next[0:hasH2]); next[0] = h2 }
         tlsConfig.NextProtos = append(tlsConfig.NextProtos, next...)
     }
 	if options.MinVersion != "" {
@@ -111,41 +109,20 @@ func NewRealityServer(ctx context.Context, logger log.Logger, options option.Inb
 	tlsConfig.MaxTimeDiff = time.Duration(options.Reality.MaxTimeDifference)
 
     tlsConfig.ShortIds = make(map[[8]byte]bool)
-    if len(options.Reality.ShortID) == 0 {
-        // Explicitly allow empty short-id when configured, otherwise follow upstream behavior
-        if options.Reality.AllowEmptyShortID {
-            tlsConfig.ShortIds[[8]byte{0}] = true
+    for i, shortIDString := range options.Reality.ShortID {
+        var sidHead [8]byte
+        decodedLen, err := hex.Decode(sidHead[:], []byte(shortIDString))
+        if err != nil {
+            return nil, E.Cause(err, "decode short_id[", i, "]: ", shortIDString)
         }
-    } else {
-        padMode := strings.ToLower(options.Reality.ShortIDPad)
-        if padMode == "" { padMode = "prefix" }
-        for i, shortIDString := range options.Reality.ShortID {
-            var shortID [8]byte
-            decodedLen, err := hex.Decode(shortID[:], []byte(shortIDString))
-            if err != nil {
-                return nil, E.Cause(err, "decode short_id[", i, "]: ", shortIDString)
-            }
-            if decodedLen > 8 {
-                return nil, E.New("invalid short_id[", i, "]: ", shortIDString)
-            }
-            // Upstream places bytes at the head and leaves tail zeros.
-            // For compatibility, allow configurable padding mode.
-            switch padMode {
-            case "prefix":
-                tlsConfig.ShortIds[shortID] = true
-            case "suffix":
-                var sid2 [8]byte
-                copy(sid2[8-decodedLen:], shortID[:decodedLen])
-                tlsConfig.ShortIds[sid2] = true
-            case "both":
-                tlsConfig.ShortIds[shortID] = true
-                var sid2 [8]byte
-                copy(sid2[8-decodedLen:], shortID[:decodedLen])
-                tlsConfig.ShortIds[sid2] = true
-            default:
-                tlsConfig.ShortIds[shortID] = true
-            }
+        if decodedLen == 0 || decodedLen > 8 {
+            return nil, E.New("invalid short_id[", i, "]: ", shortIDString)
         }
+        // Accept both head-padded (prefix) and tail-padded (suffix) variants to match clients.
+        tlsConfig.ShortIds[sidHead] = true
+        var sidTail [8]byte
+        copy(sidTail[8-decodedLen:], sidHead[:decodedLen])
+        tlsConfig.ShortIds[sidTail] = true
     }
 
 	handshakeDialer, err := dialer.New(ctx, options.Reality.Handshake.DialerOptions, options.Reality.Handshake.ServerIsDomain())
@@ -156,18 +133,7 @@ func NewRealityServer(ctx context.Context, logger log.Logger, options option.Inb
 		return handshakeDialer.DialContext(ctx, network, M.ParseSocksaddr(addr))
 	}
 
-    // Basic diagnostic for compatibility debugging
-    if logger != nil {
-        // Format as a single string to avoid logger panic on slice args
-        _serverNames := make([]string, 0, len(tlsConfig.ServerNames))
-        for k := range tlsConfig.ServerNames { _serverNames = append(_serverNames, k) }
-        _shorts := make([]string, 0, len(tlsConfig.ShortIds))
-        for k := range tlsConfig.ShortIds { _shorts = append(_shorts, fmt.Sprintf("%x", k)) }
-        padMode := ""
-        if options.Reality != nil { padMode = options.Reality.ShortIDPad }
-        logger.Debug(fmt.Sprintf("reality.server:init dest=%s server_name=%s alpn=%v server_names=%v short_ids=%v allow_empty_sid=%v short_id_pad=%s",
-            tlsConfig.Dest, tlsConfig.ServerName, tlsConfig.NextProtos, _serverNames, _shorts, options.Reality != nil && options.Reality.AllowEmptyShortID, padMode))
-    }
+    // No extra verbose diagnostics by default; rely on standard inbound logs.
     return &RealityServerConfig{config: &tlsConfig, logger: logger}, nil
 }
 
@@ -209,16 +175,7 @@ func (c *RealityServerConfig) Server(conn net.Conn) (Conn, error) {
 
 func (c *RealityServerConfig) ServerHandshake(ctx context.Context, conn net.Conn) (Conn, error) {
     tlsConn, err := utls.RealityServer(ctx, conn, c.config)
-    if err != nil {
-        if c.logger != nil {
-            c.logger.Debug(fmt.Sprintf("reality.server:handshake failed err=%v", err))
-        }
-        return nil, err
-    }
-    if c.logger != nil {
-        st := tlsConn.ConnectionState()
-        c.logger.Trace(fmt.Sprintf("reality.server:handshake ok sni=%s alpn=%s", st.ServerName, st.NegotiatedProtocol))
-    }
+    if err != nil { return nil, err }
     return &realityConnWrapper{Conn: tlsConn}, nil
 }
 
