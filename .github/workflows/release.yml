@@ -25,11 +25,13 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go }}
-      - name: Build with with_utls tag
+      - name: Build with feature tags
+        env:
+          BUILD_TAGS: with_gvisor,with_quic,with_dhcp,with_wireguard,with_utls,with_acme,with_clash_api,with_tailscale
         run: |
           mkdir -p dist
           OUT=sing-box-${{ matrix.target.os }}-${{ matrix.target.arch }}
-          GOOS=${{ matrix.target.os }} GOARCH=${{ matrix.target.arch }} go build -trimpath -tags with_utls -o dist/${OUT} ./cmd/sing-box
+          GOOS=${{ matrix.target.os }} GOARCH=${{ matrix.target.arch }} go build -trimpath -tags "${BUILD_TAGS}" -o dist/${OUT} ./cmd/sing-box
           tar -C dist -czf dist/${OUT}.tar.gz ${OUT}
       - name: Upload Release Assets
         uses: softprops/action-gh-release@v2
@@ -38,4 +40,3 @@ jobs:
             dist/sing-box-*.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
