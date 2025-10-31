@@ -90,8 +90,14 @@ func NewRealityServer(ctx context.Context, logger log.Logger, options option.Inb
 	}
 	tlsConfig.Type = N.NetworkTCP
     tlsConfig.Dest = options.Reality.Handshake.ServerOptions.Build().String()
-
-	tlsConfig.ServerNames = map[string]bool{options.ServerName: true}
+    // Align serverNames with handshake host and optional explicit ServerName
+    host := tlsConfig.Dest
+    if h, _, err := net.SplitHostPort(tlsConfig.Dest); err == nil && h != "" {
+        host = h
+    }
+    tlsConfig.ServerNames = make(map[string]bool)
+    if host != "" { tlsConfig.ServerNames[host] = true }
+    if options.ServerName != "" { tlsConfig.ServerNames[options.ServerName] = true }
 	privateKey, err := base64.RawURLEncoding.DecodeString(options.Reality.PrivateKey)
 	if err != nil {
 		return nil, E.Cause(err, "decode private key")
