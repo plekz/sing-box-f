@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/sagernet/sing-box/common/dialer"
@@ -95,9 +96,10 @@ func NewRealityServer(ctx context.Context, logger log.Logger, options option.Inb
     if h, _, err := net.SplitHostPort(tlsConfig.Dest); err == nil && h != "" {
         host = h
     }
+    if host != "" { host = strings.ToLower(host) }
     tlsConfig.ServerNames = make(map[string]bool)
     if host != "" { tlsConfig.ServerNames[host] = true }
-    if options.ServerName != "" { tlsConfig.ServerNames[options.ServerName] = true }
+    if options.ServerName != "" { tlsConfig.ServerNames[strings.ToLower(options.ServerName)] = true }
 	privateKey, err := base64.RawURLEncoding.DecodeString(options.Reality.PrivateKey)
 	if err != nil {
 		return nil, E.Cause(err, "decode private key")
@@ -115,6 +117,8 @@ func NewRealityServer(ctx context.Context, logger log.Logger, options option.Inb
             tlsConfig.ShortIds[[8]byte{0}] = true
         }
     } else {
+        padMode := strings.ToLower(options.Reality.ShortIDPad)
+        if padMode == "" { padMode = "prefix" }
         for i, shortIDString := range options.Reality.ShortID {
             var shortID [8]byte
             decodedLen, err := hex.Decode(shortID[:], []byte(shortIDString))
@@ -124,7 +128,23 @@ func NewRealityServer(ctx context.Context, logger log.Logger, options option.Inb
             if decodedLen > 8 {
                 return nil, E.New("invalid short_id[", i, "]: ", shortIDString)
             }
-            tlsConfig.ShortIds[shortID] = true
+            // Upstream places bytes at the head and leaves tail zeros.
+            // For compatibility, allow configurable padding mode.
+            switch padMode {
+            case "prefix":
+                tlsConfig.ShortIds[shortID] = true
+            case "suffix":
+                var sid2 [8]byte
+                copy(sid2[8-decodedLen:], shortID[:decodedLen])
+                tlsConfig.ShortIds[sid2] = true
+            case "both":
+                tlsConfig.ShortIds[shortID] = true
+                var sid2 [8]byte
+                copy(sid2[8-decodedLen:], shortID[:decodedLen])
+                tlsConfig.ShortIds[sid2] = true
+            default:
+                tlsConfig.ShortIds[shortID] = true
+            }
         }
     }
 
@@ -138,7 +158,15 @@ func NewRealityServer(ctx context.Context, logger log.Logger, options option.Inb
 
     // Basic diagnostic for compatibility debugging
     if logger != nil {
-        logger.Debug("reality.server: init dest=", tlsConfig.Dest, ", server_name=", tlsConfig.ServerName, ", alpn=", tlsConfig.NextProtos)
+        // Format as a single string to avoid logger panic on slice args
+        _serverNames := make([]string, 0, len(tlsConfig.ServerNames))
+        for k := range tlsConfig.ServerNames { _serverNames = append(_serverNames, k) }
+        _shorts := make([]string, 0, len(tlsConfig.ShortIds))
+        for k := range tlsConfig.ShortIds { _shorts = append(_shorts, fmt.Sprintf("%x", k)) }
+        padMode := ""
+        if options.Reality != nil { padMode = options.Reality.ShortIDPad }
+        logger.Debug(fmt.Sprintf("reality.server:init dest=%s server_name=%s alpn=%v server_names=%v short_ids=%v allow_empty_sid=%v short_id_pad=%s",
+            tlsConfig.Dest, tlsConfig.ServerName, tlsConfig.NextProtos, _serverNames, _shorts, options.Reality != nil && options.Reality.AllowEmptyShortID, padMode))
     }
     return &RealityServerConfig{config: &tlsConfig, logger: logger}, nil
 }
@@ -183,13 +211,13 @@ func (c *RealityServerConfig) ServerHandshake(ctx context.Context, conn net.Conn
     tlsConn, err := utls.RealityServer(ctx, conn, c.config)
     if err != nil {
         if c.logger != nil {
-            c.logger.Debug("reality.server: handshake failed: ", err)
+            c.logger.Debug(fmt.Sprintf("reality.server:handshake failed err=%v", err))
         }
         return nil, err
     }
     if c.logger != nil {
         st := tlsConn.ConnectionState()
-        c.logger.Trace("reality.server: handshake ok sni=", st.ServerName, ", alpn=", st.NegotiatedProtocol)
+        c.logger.Trace(fmt.Sprintf("reality.server:handshake ok sni=%s alpn=%s", st.ServerName, st.NegotiatedProtocol))
     }
     return &realityConnWrapper{Conn: tlsConn}, nil
 }

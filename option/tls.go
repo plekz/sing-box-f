@@ -83,6 +83,11 @@ type InboundRealityOptions struct {
     AllowEmptyShortID bool `json:"allow_empty_short_id,omitempty"`
     // If true, prefer ALPN order with h2 first; otherwise keep configured order.
     AlpnPreferH2 bool `json:"alpn_prefer_h2,omitempty"`
+    // Short ID padding mode when provided hex length < 16 (bytes<8):
+    //  - "prefix" (default): bytes placed at the head (current upstream behavior)
+    //  - "suffix": bytes placed at the tail
+    //  - "both": add both variants into acceptance set
+    ShortIDPad string `json:"short_id_pad,omitempty"`
 }
 
 type InboundRealityHandshakeOptions struct {
