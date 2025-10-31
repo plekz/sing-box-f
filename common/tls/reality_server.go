@@ -25,7 +25,8 @@ import (
 var _ ServerConfigCompat = (*RealityServerConfig)(nil)
 
 type RealityServerConfig struct {
-	config *utls.RealityConfig
+    config *utls.RealityConfig
+    logger log.Logger
 }
 
 func NewRealityServer(ctx context.Context, logger log.Logger, options option.InboundTLSOptions) (*RealityServerConfig, error) {
@@ -38,9 +39,16 @@ func NewRealityServer(ctx context.Context, logger log.Logger, options option.Inb
 	if options.ServerName != "" {
 		tlsConfig.ServerName = options.ServerName
 	}
-	if len(options.ALPN) > 0 {
-		tlsConfig.NextProtos = append(tlsConfig.NextProtos, options.ALPN...)
-	}
+    if len(options.ALPN) > 0 {
+        next := append([]string{}, options.ALPN...)
+        // Optional: ensure h2 is first when requested for better client compatibility
+        if options.Reality != nil && options.Reality.AlpnPreferH2 {
+            hasH2 := -1
+            for i, p := range next { if p == "h2" { hasH2 = i; break } }
+            if hasH2 > 0 { h2 := next[hasH2]; copy(next[1:hasH2+1], next[0:hasH2]); next[0] = h2 }
+        }
+        tlsConfig.NextProtos = append(tlsConfig.NextProtos, next...)
+    }
 	if options.MinVersion != "" {
 		minVersion, err := ParseTLSVersion(options.MinVersion)
 		if err != nil {
@@ -81,7 +89,7 @@ func NewRealityServer(ctx context.Context, logger log.Logger, options option.Inb
 		}
 	}
 	tlsConfig.Type = N.NetworkTCP
-	tlsConfig.Dest = options.Reality.Handshake.ServerOptions.Build().String()
+    tlsConfig.Dest = options.Reality.Handshake.ServerOptions.Build().String()
 
 	tlsConfig.ServerNames = map[string]bool{options.ServerName: true}
 	privateKey, err := base64.RawURLEncoding.DecodeString(options.Reality.PrivateKey)
@@ -94,22 +102,25 @@ func NewRealityServer(ctx context.Context, logger log.Logger, options option.Inb
 	tlsConfig.PrivateKey = privateKey
 	tlsConfig.MaxTimeDiff = time.Duration(options.Reality.MaxTimeDifference)
 
-	tlsConfig.ShortIds = make(map[[8]byte]bool)
-	if len(options.Reality.ShortID) == 0 {
-		tlsConfig.ShortIds[[8]byte{0}] = true
-	} else {
-		for i, shortIDString := range options.Reality.ShortID {
-			var shortID [8]byte
-			decodedLen, err := hex.Decode(shortID[:], []byte(shortIDString))
-			if err != nil {
-				return nil, E.Cause(err, "decode short_id[", i, "]: ", shortIDString)
-			}
-			if decodedLen > 8 {
-				return nil, E.New("invalid short_id[", i, "]: ", shortIDString)
-			}
-			tlsConfig.ShortIds[shortID] = true
-		}
-	}
+    tlsConfig.ShortIds = make(map[[8]byte]bool)
+    if len(options.Reality.ShortID) == 0 {
+        // Explicitly allow empty short-id when configured, otherwise follow upstream behavior
+        if options.Reality.AllowEmptyShortID {
+            tlsConfig.ShortIds[[8]byte{0}] = true
+        }
+    } else {
+        for i, shortIDString := range options.Reality.ShortID {
+            var shortID [8]byte
+            decodedLen, err := hex.Decode(shortID[:], []byte(shortIDString))
+            if err != nil {
+                return nil, E.Cause(err, "decode short_id[", i, "]: ", shortIDString)
+            }
+            if decodedLen > 8 {
+                return nil, E.New("invalid short_id[", i, "]: ", shortIDString)
+            }
+            tlsConfig.ShortIds[shortID] = true
+        }
+    }
 
 	handshakeDialer, err := dialer.New(ctx, options.Reality.Handshake.DialerOptions, options.Reality.Handshake.ServerIsDomain())
 	if err != nil {
@@ -119,7 +130,11 @@ func NewRealityServer(ctx context.Context, logger log.Logger, options option.Inb
 		return handshakeDialer.DialContext(ctx, network, M.ParseSocksaddr(addr))
 	}
 
-	return &RealityServerConfig{&tlsConfig}, nil
+    // Basic diagnostic for compatibility debugging
+    if logger != nil {
+        logger.Debug("reality.server: init dest=", tlsConfig.Dest, ", server_name=", tlsConfig.ServerName, ", alpn=", tlsConfig.NextProtos)
+    }
+    return &RealityServerConfig{config: &tlsConfig, logger: logger}, nil
 }
 
 func (c *RealityServerConfig) ServerName() string {
@@ -159,11 +174,18 @@ func (c *RealityServerConfig) Server(conn net.Conn) (Conn, error) {
 }
 
 func (c *RealityServerConfig) ServerHandshake(ctx context.Context, conn net.Conn) (Conn, error) {
-	tlsConn, err := utls.RealityServer(ctx, conn, c.config)
-	if err != nil {
-		return nil, err
-	}
-	return &realityConnWrapper{Conn: tlsConn}, nil
+    tlsConn, err := utls.RealityServer(ctx, conn, c.config)
+    if err != nil {
+        if c.logger != nil {
+            c.logger.Debug("reality.server: handshake failed: ", err)
+        }
+        return nil, err
+    }
+    if c.logger != nil {
+        st := tlsConn.ConnectionState()
+        c.logger.Trace("reality.server: handshake ok sni=", st.ServerName, ", alpn=", st.NegotiatedProtocol)
+    }
+    return &realityConnWrapper{Conn: tlsConn}, nil
 }
 
 func (c *RealityServerConfig) Clone() Config {

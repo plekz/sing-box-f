@@ -73,11 +73,16 @@ func (o *OutboundTLSOptionsContainer) ReplaceOutboundTLSOptions(options *Outboun
 }
 
 type InboundRealityOptions struct {
-	Enabled           bool                           `json:"enabled,omitempty"`
-	Handshake         InboundRealityHandshakeOptions `json:"handshake,omitempty"`
-	PrivateKey        string                         `json:"private_key,omitempty"`
-	ShortID           badoption.Listable[string]     `json:"short_id,omitempty"`
-	MaxTimeDifference badoption.Duration             `json:"max_time_difference,omitempty"`
+    Enabled           bool                           `json:"enabled,omitempty"`
+    Handshake         InboundRealityHandshakeOptions `json:"handshake,omitempty"`
+    PrivateKey        string                         `json:"private_key,omitempty"`
+    ShortID           badoption.Listable[string]     `json:"short_id,omitempty"`
+    MaxTimeDifference badoption.Duration             `json:"max_time_difference,omitempty"`
+    // Compatibility toggles (optional, backward-compatible)
+    // If true, empty short_id acceptance is explicitly enabled (defaults to upstream behavior if omitted).
+    AllowEmptyShortID bool `json:"allow_empty_short_id,omitempty"`
+    // If true, prefer ALPN order with h2 first; otherwise keep configured order.
+    AlpnPreferH2 bool `json:"alpn_prefer_h2,omitempty"`
 }
 
 type InboundRealityHandshakeOptions struct {
