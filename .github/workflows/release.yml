@@ -1,0 +1,41 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go: [ '1.22.x' ]
+        target:
+          - { os: linux,  arch: amd64 }
+          - { os: linux,  arch: arm64 }
+          - { os: darwin, arch: arm64 }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+      - name: Build with with_utls tag
+        run: |
+          mkdir -p dist
+          OUT=sing-box-${{ matrix.target.os }}-${{ matrix.target.arch }}
+          GOOS=${{ matrix.target.os }} GOARCH=${{ matrix.target.arch }} go build -trimpath -tags with_utls -o dist/${OUT} ./cmd/sing-box
+          tar -C dist -czf dist/${OUT}.tar.gz ${OUT}
+      - name: Upload Release Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/sing-box-*.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
